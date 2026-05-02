@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.wavebridge.ui.theme.WaveBridgeTheme
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -91,7 +92,7 @@ private fun WaveBridgeApp(
     onSettings: (AudioSettings) -> Unit,
 ) {
     var tab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Monitor", "Quality", "Power", "Advanced")
+    val tabs = listOf("Monitor", "Quality", "Effects", "Power", "Advanced")
 
     Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
         Surface(
@@ -118,7 +119,8 @@ private fun WaveBridgeApp(
                     when (tab) {
                         0 -> MonitorTab(stats)
                         1 -> QualityTab(settings, onSettings)
-                        2 -> PowerTab(settings, onSettings)
+                        2 -> EffectsTab(settings, stats, onSettings)
+                        3 -> PowerTab(settings, onSettings)
                         else -> AdvancedTab(settings, stats, onSettings)
                     }
                 }
@@ -186,7 +188,7 @@ private fun QualityTab(settings: AudioSettings, onSettings: (AudioSettings) -> U
             PresetRow(
                 preset = preset,
                 selected = settings.preset == preset,
-                onClick = { onSettings(AudioSettings.preset(preset)) },
+                onClick = { onSettings(AudioSettings.preset(settings, preset)) },
             )
         }
     }
@@ -235,6 +237,110 @@ private fun QualityTab(settings: AudioSettings, onSettings: (AudioSettings) -> U
 }
 
 @Composable
+private fun EffectsTab(
+    settings: AudioSettings,
+    stats: ReceiverStats,
+    onSettings: (AudioSettings) -> Unit,
+) {
+    SectionCard("Effect Presets", "Tone presets use Android's built-in audio effects and stay optional.") {
+        AudioEffectPreset.entries.filter { it != AudioEffectPreset.Custom }.forEach { preset ->
+            EffectPresetRow(
+                preset = preset,
+                selected = settings.effectPreset == preset,
+                onClick = { onSettings(AudioSettings.effectPreset(settings, preset)) },
+            )
+        }
+    }
+
+    SectionCard("Processing", "Manual controls apply to the active output session and release when disabled.") {
+        SettingSwitch("Enable effects", "Turn off for the cleanest signal and lowest processing cost.", settings.effectsEnabled) { enabled ->
+            onSettings(
+                if (enabled) {
+                    settings.copy(effectPreset = AudioEffectPreset.Custom, effectsEnabled = true)
+                } else {
+                    AudioSettings.effectPreset(settings, AudioEffectPreset.Flat)
+                },
+            )
+        }
+        DetailRow("Active effects", stats.effectsStatus)
+        SettingSlider(
+            label = "Bass boost",
+            value = settings.bassBoostStrength,
+            range = 0f..1000f,
+            step = 25,
+            unit = "strength",
+            onChange = {
+                onSettings(
+                    settings.copy(
+                        effectPreset = AudioEffectPreset.Custom,
+                        effectsEnabled = true,
+                        bassBoostStrength = it,
+                    ),
+                )
+            },
+        )
+        SettingDbSlider(
+            label = "Loudness",
+            value = settings.loudnessGainMb,
+            range = 0..600,
+            step = 25,
+            onChange = {
+                onSettings(
+                    settings.copy(
+                        effectPreset = AudioEffectPreset.Custom,
+                        effectsEnabled = true,
+                        loudnessGainMb = it,
+                    ),
+                )
+            },
+        )
+        SettingSlider(
+            label = "Virtualizer",
+            value = settings.virtualizerStrength,
+            range = 0f..1000f,
+            step = 25,
+            unit = "strength",
+            onChange = {
+                onSettings(
+                    settings.copy(
+                        effectPreset = AudioEffectPreset.Custom,
+                        effectsEnabled = true,
+                        virtualizerStrength = it,
+                    ),
+                )
+            },
+        )
+    }
+
+    SectionCard("Equalizer", "Five simple tone bands are mapped to the phone's available EQ bands.") {
+        SettingSwitch("Enable equalizer", "Use the device equalizer after the stream is decoded.", settings.equalizerEnabled) {
+            onSettings(
+                settings.copy(
+                    effectPreset = AudioEffectPreset.Custom,
+                    effectsEnabled = it || settings.effectsEnabled,
+                    equalizerEnabled = it,
+                ),
+            )
+        }
+        SettingDbSlider("Low", settings.eqLowGain, -600..600, 25) {
+            onSettings(settings.copy(effectPreset = AudioEffectPreset.Custom, effectsEnabled = true, equalizerEnabled = true, eqLowGain = it))
+        }
+        SettingDbSlider("Low mid", settings.eqLowMidGain, -600..600, 25) {
+            onSettings(settings.copy(effectPreset = AudioEffectPreset.Custom, effectsEnabled = true, equalizerEnabled = true, eqLowMidGain = it))
+        }
+        SettingDbSlider("Mid", settings.eqMidGain, -600..600, 25) {
+            onSettings(settings.copy(effectPreset = AudioEffectPreset.Custom, effectsEnabled = true, equalizerEnabled = true, eqMidGain = it))
+        }
+        SettingDbSlider("High mid", settings.eqHighMidGain, -600..600, 25) {
+            onSettings(settings.copy(effectPreset = AudioEffectPreset.Custom, effectsEnabled = true, equalizerEnabled = true, eqHighMidGain = it))
+        }
+        SettingDbSlider("High", settings.eqHighGain, -600..600, 25) {
+            onSettings(settings.copy(effectPreset = AudioEffectPreset.Custom, effectsEnabled = true, equalizerEnabled = true, eqHighGain = it))
+        }
+    }
+}
+
+@Composable
 private fun PowerTab(settings: AudioSettings, onSettings: (AudioSettings) -> Unit) {
     SectionCard("Runtime Power", "Locks are held only while the receiver is started.") {
         SettingSwitch("Wi-Fi low-latency lock", "Keeps Wi-Fi responsive for real-time audio. Uses more battery.", settings.wifiLowLatencyLock) {
@@ -249,9 +355,9 @@ private fun PowerTab(settings: AudioSettings, onSettings: (AudioSettings) -> Uni
     }
 
     SectionCard("Recommended Modes", "Use Battery saver for long listening, Balanced for most sessions, Low latency for interactive audio.") {
-        AssistChip(onClick = { onSettings(AudioSettings.preset(AudioPreset.BatterySaver)) }, label = { Text("Battery saver") })
-        AssistChip(onClick = { onSettings(AudioSettings.preset(AudioPreset.Balanced)) }, label = { Text("Balanced") })
-        AssistChip(onClick = { onSettings(AudioSettings.preset(AudioPreset.LowLatency)) }, label = { Text("Low latency") })
+        AssistChip(onClick = { onSettings(AudioSettings.preset(settings, AudioPreset.BatterySaver)) }, label = { Text("Battery saver") })
+        AssistChip(onClick = { onSettings(AudioSettings.preset(settings, AudioPreset.Balanced)) }, label = { Text("Balanced") })
+        AssistChip(onClick = { onSettings(AudioSettings.preset(settings, AudioPreset.LowLatency)) }, label = { Text("Low latency") })
     }
 }
 
@@ -275,6 +381,7 @@ private fun AdvancedTab(
         DetailRow("Sender", stats.lastSender)
         DetailRow("Codec", stats.lastCodec)
         DetailRow("Route", stats.audioRoute)
+        DetailRow("Effects", stats.effectsStatus)
         DetailRow("Bytes", stats.bytes.toString())
         DetailRow("Invalid packets", stats.invalidPackets.toString())
         DetailRow("Sequence gaps", stats.sequenceGaps.toString())
@@ -309,6 +416,7 @@ private fun DetailsPanel(stats: ReceiverStats) {
         DetailRow("Frame samples", stats.lastFrameSamples.toString())
         DetailRow("Audio route", stats.audioRoute)
         DetailRow("Power", stats.powerMode)
+        DetailRow("Effects", stats.effectsStatus)
         DetailRow("Silence fills", stats.silenceFrames.toString())
         DetailRow("Drift corrections", stats.driftCorrections.toString())
         DetailRow("Sequence gaps", stats.sequenceGaps.toString())
@@ -342,6 +450,21 @@ private fun PresetRow(preset: AudioPreset, selected: Boolean, onClick: () -> Uni
 }
 
 @Composable
+private fun EffectPresetRow(preset: AudioEffectPreset, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = {
+            Column(Modifier.padding(vertical = 4.dp)) {
+                Text(preset.title, fontWeight = FontWeight.SemiBold)
+                Text(preset.summary, style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+@Composable
 private fun SectionCard(
     title: String,
     subtitle: String,
@@ -355,6 +478,40 @@ private fun SectionCard(
             content()
         }
     }
+}
+
+@Composable
+private fun SettingDbSlider(
+    label: String,
+    value: Int,
+    range: IntRange,
+    step: Int,
+    onChange: (Int) -> Unit,
+) {
+    Column {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
+            Text(formatDb(value), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Slider(
+            value = value.toFloat(),
+            onValueChange = {
+                val stepped = (it / step).roundToInt() * step
+                onChange(stepped.coerceIn(range.first, range.last))
+            },
+            valueRange = range.first.toFloat()..range.last.toFloat(),
+        )
+    }
+}
+
+private fun formatDb(value: Int): String {
+    val prefix = when {
+        value > 0 -> "+"
+        value < 0 -> "-"
+        else -> ""
+    }
+    val absolute = abs(value)
+    return "$prefix${absolute / 100}.${(absolute % 100) / 10} dB"
 }
 
 @Composable
@@ -424,6 +581,7 @@ private fun WaveBridgeAppPreview() {
                 lastFrameSamples = 240,
                 audioRoute = "USB-C headphones",
                 powerMode = "multicast+wifi-low-latency+wake",
+                effectsStatus = "bass+eq",
             ),
             settings = AudioSettings.preset(AudioPreset.Balanced),
             onStart = {},

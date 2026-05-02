@@ -21,6 +21,7 @@ The first working receiver path is implemented:
 - holds Wi-Fi/multicast/CPU locks only while receiving, then releases them on stop
 - includes one-tap audio presets for low latency, balanced listening, stability, and battery saving
 - exposes custom latency, buffer, playback, route, Opus, and power settings
+- adds optional audio effects for bass boost, loudness, virtualizer, and five-band EQ tuning
 - uses a small jitter buffer to smooth UDP timing
 - fills missing PCM frames with silence instead of letting playback timing drift
 - trims the buffer if the phone falls behind, keeping latency bounded
@@ -97,6 +98,20 @@ The `Quality`, `Power`, and `Advanced` tabs let you tune the same settings manua
 - Wi-Fi low-latency lock
 - CPU wake lock
 - notification update frequency
+
+## Audio Effects
+
+The `Effects` tab is optional and defaults to a clean signal. It uses Android's built-in audio effects on the active `AudioTrack` session, then releases them when disabled so the receiver stays lightweight.
+
+Available controls:
+
+- presets: `Flat`, `Bass boost`, `Warm`, `Bright`, `Voice`, and `Movie`
+- manual bass boost strength
+- loudness gain
+- virtualizer strength, when supported by the device
+- five-band equalizer: low, low mid, mid, high mid, and high
+
+Device support varies because these effects are implemented by Android and the phone vendor. If a specific effect is unavailable, WaveBridge skips it and keeps playback running.
 
 ## Protocol Compatibility
 

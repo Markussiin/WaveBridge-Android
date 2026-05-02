@@ -16,6 +16,19 @@ enum class AudioPreset(
     Custom("Custom", "Manual receiver tuning"),
 }
 
+enum class AudioEffectPreset(
+    val title: String,
+    val summary: String,
+) {
+    Flat("Flat", "No tonal changes"),
+    BassBoost("Bass boost", "Strong low-end lift"),
+    Warm("Warm", "Fuller bass with softer highs"),
+    Bright("Bright", "Clearer treble and presence"),
+    Voice("Voice", "Focused mids for speech"),
+    Movie("Movie", "Wide, lively playback"),
+    Custom("Custom", "Manual effect tuning"),
+}
+
 data class AudioSettings(
     val preset: AudioPreset = AudioPreset.Balanced,
     val startBufferMs: Int = 40,
@@ -29,6 +42,17 @@ data class AudioSettings(
     val wifiLowLatencyLock: Boolean = true,
     val cpuWakeLock: Boolean = true,
     val notificationStats: Boolean = true,
+    val effectsEnabled: Boolean = false,
+    val effectPreset: AudioEffectPreset = AudioEffectPreset.Flat,
+    val bassBoostStrength: Int = 0,
+    val loudnessGainMb: Int = 0,
+    val virtualizerStrength: Int = 0,
+    val equalizerEnabled: Boolean = false,
+    val eqLowGain: Int = 0,
+    val eqLowMidGain: Int = 0,
+    val eqMidGain: Int = 0,
+    val eqHighMidGain: Int = 0,
+    val eqHighGain: Int = 0,
 ) {
     companion object {
         fun preset(preset: AudioPreset): AudioSettings {
@@ -92,6 +116,109 @@ data class AudioSettings(
                 AudioPreset.Custom -> AudioSettings(preset = preset)
             }
         }
+
+        fun preset(current: AudioSettings, preset: AudioPreset): AudioSettings {
+            return preset(preset).copy(
+                effectsEnabled = current.effectsEnabled,
+                effectPreset = current.effectPreset,
+                bassBoostStrength = current.bassBoostStrength,
+                loudnessGainMb = current.loudnessGainMb,
+                virtualizerStrength = current.virtualizerStrength,
+                equalizerEnabled = current.equalizerEnabled,
+                eqLowGain = current.eqLowGain,
+                eqLowMidGain = current.eqLowMidGain,
+                eqMidGain = current.eqMidGain,
+                eqHighMidGain = current.eqHighMidGain,
+                eqHighGain = current.eqHighGain,
+            )
+        }
+
+        fun effectPreset(current: AudioSettings, preset: AudioEffectPreset): AudioSettings {
+            return when (preset) {
+                AudioEffectPreset.Flat -> current.copy(
+                    effectPreset = preset,
+                    effectsEnabled = false,
+                    bassBoostStrength = 0,
+                    loudnessGainMb = 0,
+                    virtualizerStrength = 0,
+                    equalizerEnabled = false,
+                    eqLowGain = 0,
+                    eqLowMidGain = 0,
+                    eqMidGain = 0,
+                    eqHighMidGain = 0,
+                    eqHighGain = 0,
+                )
+                AudioEffectPreset.BassBoost -> current.copy(
+                    effectPreset = preset,
+                    effectsEnabled = true,
+                    bassBoostStrength = 700,
+                    loudnessGainMb = 100,
+                    virtualizerStrength = 0,
+                    equalizerEnabled = true,
+                    eqLowGain = 500,
+                    eqLowMidGain = 250,
+                    eqMidGain = 0,
+                    eqHighMidGain = -100,
+                    eqHighGain = -150,
+                )
+                AudioEffectPreset.Warm -> current.copy(
+                    effectPreset = preset,
+                    effectsEnabled = true,
+                    bassBoostStrength = 350,
+                    loudnessGainMb = 50,
+                    virtualizerStrength = 0,
+                    equalizerEnabled = true,
+                    eqLowGain = 250,
+                    eqLowMidGain = 180,
+                    eqMidGain = 0,
+                    eqHighMidGain = -80,
+                    eqHighGain = -120,
+                )
+                AudioEffectPreset.Bright -> current.copy(
+                    effectPreset = preset,
+                    effectsEnabled = true,
+                    bassBoostStrength = 0,
+                    loudnessGainMb = 80,
+                    virtualizerStrength = 0,
+                    equalizerEnabled = true,
+                    eqLowGain = -150,
+                    eqLowMidGain = -60,
+                    eqMidGain = 0,
+                    eqHighMidGain = 200,
+                    eqHighGain = 380,
+                )
+                AudioEffectPreset.Voice -> current.copy(
+                    effectPreset = preset,
+                    effectsEnabled = true,
+                    bassBoostStrength = 0,
+                    loudnessGainMb = 120,
+                    virtualizerStrength = 0,
+                    equalizerEnabled = true,
+                    eqLowGain = -250,
+                    eqLowMidGain = -100,
+                    eqMidGain = 250,
+                    eqHighMidGain = 320,
+                    eqHighGain = 120,
+                )
+                AudioEffectPreset.Movie -> current.copy(
+                    effectPreset = preset,
+                    effectsEnabled = true,
+                    bassBoostStrength = 500,
+                    loudnessGainMb = 180,
+                    virtualizerStrength = 350,
+                    equalizerEnabled = true,
+                    eqLowGain = 250,
+                    eqLowMidGain = 100,
+                    eqMidGain = 0,
+                    eqHighMidGain = 150,
+                    eqHighGain = 180,
+                )
+                AudioEffectPreset.Custom -> current.copy(
+                    effectPreset = preset,
+                    effectsEnabled = true,
+                )
+            }
+        }
     }
 }
 
@@ -103,6 +230,11 @@ object AudioSettingsStore {
         val preset = runCatching {
             AudioPreset.valueOf(prefs.getString("preset", AudioPreset.Balanced.name) ?: AudioPreset.Balanced.name)
         }.getOrDefault(AudioPreset.Balanced)
+        val effectPreset = runCatching {
+            AudioEffectPreset.valueOf(
+                prefs.getString("effectPreset", AudioEffectPreset.Flat.name) ?: AudioEffectPreset.Flat.name,
+            )
+        }.getOrDefault(AudioEffectPreset.Flat)
 
         return AudioSettings(
             preset = preset,
@@ -117,6 +249,17 @@ object AudioSettingsStore {
             wifiLowLatencyLock = prefs.getBoolean("wifiLowLatencyLock", AudioSettings.preset(preset).wifiLowLatencyLock),
             cpuWakeLock = prefs.getBoolean("cpuWakeLock", AudioSettings.preset(preset).cpuWakeLock),
             notificationStats = prefs.getBoolean("notificationStats", AudioSettings.preset(preset).notificationStats),
+            effectsEnabled = prefs.getBoolean("effectsEnabled", false),
+            effectPreset = effectPreset,
+            bassBoostStrength = prefs.getInt("bassBoostStrength", 0),
+            loudnessGainMb = prefs.getInt("loudnessGainMb", 0),
+            virtualizerStrength = prefs.getInt("virtualizerStrength", 0),
+            equalizerEnabled = prefs.getBoolean("equalizerEnabled", false),
+            eqLowGain = prefs.getInt("eqLowGain", 0),
+            eqLowMidGain = prefs.getInt("eqLowMidGain", 0),
+            eqMidGain = prefs.getInt("eqMidGain", 0),
+            eqHighMidGain = prefs.getInt("eqHighMidGain", 0),
+            eqHighGain = prefs.getInt("eqHighGain", 0),
         )
     }
 
@@ -135,6 +278,17 @@ object AudioSettingsStore {
             .putBoolean("wifiLowLatencyLock", settings.wifiLowLatencyLock)
             .putBoolean("cpuWakeLock", settings.cpuWakeLock)
             .putBoolean("notificationStats", settings.notificationStats)
+            .putBoolean("effectsEnabled", settings.effectsEnabled)
+            .putString("effectPreset", settings.effectPreset.name)
+            .putInt("bassBoostStrength", settings.bassBoostStrength)
+            .putInt("loudnessGainMb", settings.loudnessGainMb)
+            .putInt("virtualizerStrength", settings.virtualizerStrength)
+            .putBoolean("equalizerEnabled", settings.equalizerEnabled)
+            .putInt("eqLowGain", settings.eqLowGain)
+            .putInt("eqLowMidGain", settings.eqLowMidGain)
+            .putInt("eqMidGain", settings.eqMidGain)
+            .putInt("eqHighMidGain", settings.eqHighMidGain)
+            .putInt("eqHighGain", settings.eqHighGain)
             .apply()
     }
 }

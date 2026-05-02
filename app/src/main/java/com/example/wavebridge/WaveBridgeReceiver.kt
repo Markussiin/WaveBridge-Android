@@ -42,6 +42,7 @@ data class ReceiverStats(
     val lastFrameSamples: Int = 0,
     val audioRoute: String = "-",
     val powerMode: String = "Idle",
+    val effectsStatus: String = "off",
     val presetName: String = AudioPreset.Balanced.title,
     val configuredLatencyMs: Int = 140,
     val audioTrackBufferMs: Int = 200,
@@ -57,6 +58,7 @@ class WaveBridgeReceiver(
     private val trackLock = Any()
     private val assembler = FrameAssembler()
     private val jitterBuffer = PcmJitterBuffer()
+    private val effectsController = AudioEffectsController()
 
     private var stats = ReceiverStats()
     private var discoverySocket: DatagramSocket? = null
@@ -75,8 +77,13 @@ class WaveBridgeReceiver(
 
     private val audioManager = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val audioDeviceCallback = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) = rebuildAudioTrack("Audio route changed")
-        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) = rebuildAudioTrack("Audio route changed")
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+            rebuildAudioTrack("Audio route changed")
+        }
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+            rebuildAudioTrack("Audio route changed")
+        }
     }
 
     fun start() {
@@ -86,8 +93,9 @@ class WaveBridgeReceiver(
             acquirePowerLocks()
             discoverySocket = bindUdp(WaveBridgeProtocol.DISCOVERY_PORT)
             audioSocket = bindUdp(WaveBridgeProtocol.AUDIO_PORT)
-            synchronized(trackLock) {
+            val effectsStatus = synchronized(trackLock) {
                 audioTrack = createAudioTrack().also { it.play() }
+                applyAudioEffectsLocked()
             }
             if (settings.advertiseOpus && OpusAudioDecoder.isAvailable()) {
                 opusDecoder = runCatching { OpusAudioDecoder().also { it.start() } }.getOrNull()
@@ -109,6 +117,7 @@ class WaveBridgeReceiver(
                     audioPort = WaveBridgeProtocol.AUDIO_PORT,
                     audioRoute = currentRouteName(),
                     powerMode = activePowerMode(),
+                    effectsStatus = effectsStatus,
                     presetName = settings.preset.title,
                     configuredLatencyMs = settings.maxLatencyMs,
                     audioTrackBufferMs = settings.audioTrackBufferMs,
@@ -130,7 +139,7 @@ class WaveBridgeReceiver(
     fun stop() {
         if (!running.compareAndSet(true, false)) return
         closeResources()
-        updateStats { copy(running = false, status = "Stopped", powerMode = "Idle", queuedFrames = 0) }
+        updateStats { copy(running = false, status = "Stopped", powerMode = "Idle", effectsStatus = "off", queuedFrames = 0) }
     }
 
     fun shutdown() {
@@ -138,6 +147,7 @@ class WaveBridgeReceiver(
     }
 
     fun applySettings(next: AudioSettings) {
+        val previous = settings
         settings = next
         jitterBuffer.applySettings(next)
         if (!running.get()) {
@@ -147,13 +157,22 @@ class WaveBridgeReceiver(
                     configuredLatencyMs = next.maxLatencyMs,
                     audioTrackBufferMs = next.audioTrackBufferMs,
                     powerMode = "Idle",
+                    effectsStatus = if (next.effectsEnabled) "pending" else "off",
                 )
             }
             return
         }
 
-        rebuildPowerLocks()
-        rebuildAudioTrack("Settings applied")
+        if (powerLocksNeedRebuild(previous, next)) {
+            rebuildPowerLocks()
+        }
+
+        val effectsStatus = if (audioTrackNeedsRebuild(previous, next)) {
+            rebuildAudioTrack("Settings applied")
+        } else {
+            applyAudioEffects()
+        }
+
         if (next.advertiseOpus && opusDecoder == null && OpusAudioDecoder.isAvailable()) {
             opusDecoder = runCatching { OpusAudioDecoder().also { it.start() } }.getOrNull()
         } else if (!next.advertiseOpus) {
@@ -167,6 +186,7 @@ class WaveBridgeReceiver(
                 configuredLatencyMs = next.maxLatencyMs,
                 audioTrackBufferMs = next.audioTrackBufferMs,
                 powerMode = activePowerMode(),
+                effectsStatus = effectsStatus,
             )
         }
     }
@@ -474,16 +494,38 @@ class WaveBridgeReceiver(
         return builder.build()
     }
 
-    private fun rebuildAudioTrack(reason: String) {
-        synchronized(trackLock) {
+    private fun rebuildAudioTrack(reason: String): String {
+        val effectsStatus = synchronized(trackLock) {
+            effectsController.release()
             audioTrack?.let {
                 runCatching { it.pause() }
                 runCatching { it.flush() }
                 runCatching { it.release() }
             }
             audioTrack = createAudioTrack().also { it.play() }
+            applyAudioEffectsLocked()
         }
-        updateStats { copy(status = reason, audioRoute = currentRouteName()) }
+        updateStats { copy(status = reason, audioRoute = currentRouteName(), effectsStatus = effectsStatus) }
+        return effectsStatus
+    }
+
+    private fun applyAudioEffects(): String = synchronized(trackLock) {
+        applyAudioEffectsLocked()
+    }
+
+    private fun applyAudioEffectsLocked(): String {
+        val sessionId = audioTrack?.audioSessionId ?: return "off"
+        return effectsController.attach(sessionId, settings)
+    }
+
+    private fun audioTrackNeedsRebuild(previous: AudioSettings, next: AudioSettings): Boolean {
+        return previous.audioTrackBufferMs != next.audioTrackBufferMs ||
+            previous.lowLatencyTrack != next.lowLatencyTrack
+    }
+
+    private fun powerLocksNeedRebuild(previous: AudioSettings, next: AudioSettings): Boolean {
+        return previous.wifiLowLatencyLock != next.wifiLowLatencyLock ||
+            previous.cpuWakeLock != next.cpuWakeLock
     }
 
     private fun rebuildPowerLocks() {
@@ -553,6 +595,7 @@ class WaveBridgeReceiver(
         opusDecoder = null
 
         synchronized(trackLock) {
+            effectsController.release()
             audioTrack?.let {
                 runCatching { it.pause() }
                 runCatching { it.flush() }
