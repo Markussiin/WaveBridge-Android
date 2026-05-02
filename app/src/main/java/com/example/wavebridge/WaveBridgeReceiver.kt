@@ -42,6 +42,9 @@ data class ReceiverStats(
     val lastFrameSamples: Int = 0,
     val audioRoute: String = "-",
     val powerMode: String = "Idle",
+    val presetName: String = AudioPreset.Balanced.title,
+    val configuredLatencyMs: Int = 140,
+    val audioTrackBufferMs: Int = 200,
     val error: String? = null,
 )
 
@@ -67,6 +70,8 @@ class WaveBridgeReceiver(
     private var wakeLock: PowerManager.WakeLock? = null
     private var expectedSequence: Long? = null
     private var opusDecoder: OpusAudioDecoder? = null
+    private var settings = ReceiverState.settings
+    private var routeCallbackRegistered = false
 
     private val audioManager = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val audioDeviceCallback = object : AudioDeviceCallback() {
@@ -84,12 +89,16 @@ class WaveBridgeReceiver(
             synchronized(trackLock) {
                 audioTrack = createAudioTrack().also { it.play() }
             }
-            if (OpusAudioDecoder.isAvailable()) {
+            if (settings.advertiseOpus && OpusAudioDecoder.isAvailable()) {
                 opusDecoder = runCatching { OpusAudioDecoder().also { it.start() } }.getOrNull()
             }
-            audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
+            if (settings.routeRecovery) {
+                audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
+                routeCallbackRegistered = true
+            }
             assembler.clear()
             jitterBuffer.reset()
+            jitterBuffer.applySettings(settings)
             expectedSequence = null
 
             updateStats {
@@ -100,6 +109,9 @@ class WaveBridgeReceiver(
                     audioPort = WaveBridgeProtocol.AUDIO_PORT,
                     audioRoute = currentRouteName(),
                     powerMode = activePowerMode(),
+                    presetName = settings.preset.title,
+                    configuredLatencyMs = settings.maxLatencyMs,
+                    audioTrackBufferMs = settings.audioTrackBufferMs,
                 )
             }
 
@@ -123,6 +135,40 @@ class WaveBridgeReceiver(
 
     fun shutdown() {
         stop()
+    }
+
+    fun applySettings(next: AudioSettings) {
+        settings = next
+        jitterBuffer.applySettings(next)
+        if (!running.get()) {
+            updateStats {
+                copy(
+                    presetName = next.preset.title,
+                    configuredLatencyMs = next.maxLatencyMs,
+                    audioTrackBufferMs = next.audioTrackBufferMs,
+                    powerMode = "Idle",
+                )
+            }
+            return
+        }
+
+        rebuildPowerLocks()
+        rebuildAudioTrack("Settings applied")
+        if (next.advertiseOpus && opusDecoder == null && OpusAudioDecoder.isAvailable()) {
+            opusDecoder = runCatching { OpusAudioDecoder().also { it.start() } }.getOrNull()
+        } else if (!next.advertiseOpus) {
+            opusDecoder?.stop()
+            opusDecoder = null
+        }
+        updateRouteCallbackRegistration()
+        updateStats {
+            copy(
+                presetName = next.preset.title,
+                configuredLatencyMs = next.maxLatencyMs,
+                audioTrackBufferMs = next.audioTrackBufferMs,
+                powerMode = activePowerMode(),
+            )
+        }
     }
 
     private fun discoveryLoop() {
@@ -231,6 +277,7 @@ class WaveBridgeReceiver(
     private fun handleStart(packet: AudioPacket, sender: String) {
         assembler.clear()
         jitterBuffer.reset()
+        jitterBuffer.applySettings(settings)
         expectedSequence = null
         updateStats {
             copy(
@@ -239,6 +286,9 @@ class WaveBridgeReceiver(
                 lastCodec = packet.header.codec.wireName,
                 lastFrameSamples = packet.header.frameSamples,
                 queuedFrames = 0,
+                presetName = settings.preset.title,
+                configuredLatencyMs = settings.maxLatencyMs,
+                audioTrackBufferMs = settings.audioTrackBufferMs,
                 error = null,
             )
         }
@@ -247,6 +297,7 @@ class WaveBridgeReceiver(
     private fun handleStop(sender: String) {
         assembler.clear()
         jitterBuffer.reset()
+        jitterBuffer.applySettings(settings)
         updateStats {
             copy(
                 status = "Waiting for PC",
@@ -357,7 +408,7 @@ class WaveBridgeReceiver(
 
     private fun makeDiscoveryReply(nonce: String): String {
         val codecs = JSONArray().put(AudioCodec.PcmS16.wireName)
-        if (opusDecoder != null) {
+        if (settings.advertiseOpus && opusDecoder != null) {
             codecs.put(AudioCodec.Opus.wireName)
         }
 
@@ -387,9 +438,13 @@ class WaveBridgeReceiver(
             AudioFormat.CHANNEL_OUT_STEREO,
             AudioFormat.ENCODING_PCM_16BIT,
         )
-        val bufferSize = max(minBuffer, WaveBridgeProtocol.NETWORK_SAMPLE_RATE * 2 * 2 / 5)
+        val requestedBuffer = WaveBridgeProtocol.NETWORK_SAMPLE_RATE *
+            WaveBridgeProtocol.NETWORK_CHANNELS *
+            2 *
+            settings.audioTrackBufferMs / 1000
+        val bufferSize = max(minBuffer, requestedBuffer)
 
-        return AudioTrack.Builder()
+        val builder = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -405,7 +460,18 @@ class WaveBridgeReceiver(
             )
             .setTransferMode(AudioTrack.MODE_STREAM)
             .setBufferSizeInBytes(bufferSize)
-            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder.setPerformanceMode(
+                if (settings.lowLatencyTrack) {
+                    AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+                } else {
+                    AudioTrack.PERFORMANCE_MODE_NONE
+                },
+            )
+        }
+
+        return builder.build()
     }
 
     private fun rebuildAudioTrack(reason: String) {
@@ -420,6 +486,21 @@ class WaveBridgeReceiver(
         updateStats { copy(status = reason, audioRoute = currentRouteName()) }
     }
 
+    private fun rebuildPowerLocks() {
+        releasePowerLocks()
+        acquirePowerLocks()
+    }
+
+    private fun updateRouteCallbackRegistration() {
+        if (settings.routeRecovery && !routeCallbackRegistered) {
+            audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
+            routeCallbackRegistered = true
+        } else if (!settings.routeRecovery && routeCallbackRegistered) {
+            runCatching { audioManager.unregisterAudioDeviceCallback(audioDeviceCallback) }
+            routeCallbackRegistered = false
+        }
+    }
+
     private fun acquirePowerLocks() {
         val appContext = context.applicationContext
         val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
@@ -428,20 +509,25 @@ class WaveBridgeReceiver(
             acquire()
         }
 
-        val wifiMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-        } else {
-            WifiManager.WIFI_MODE_FULL_HIGH_PERF
-        }
-        wifiLock = wifiManager?.createWifiLock(wifiMode, "WaveBridgeAudio")?.apply {
-            setReferenceCounted(false)
-            acquire()
+        if (settings.wifiLowLatencyLock) {
+            val wifiMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                @Suppress("DEPRECATION")
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            wifiLock = wifiManager?.createWifiLock(wifiMode, "WaveBridgeAudio")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
         }
 
-        val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WaveBridge:AudioReceiver")?.apply {
-            setReferenceCounted(false)
-            acquire()
+        if (settings.cpuWakeLock) {
+            val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WaveBridge:AudioReceiver")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
         }
     }
 
@@ -459,7 +545,10 @@ class WaveBridgeReceiver(
         discoverySocket = null
         audioSocket = null
 
-        runCatching { audioManager.unregisterAudioDeviceCallback(audioDeviceCallback) }
+        if (routeCallbackRegistered) {
+            runCatching { audioManager.unregisterAudioDeviceCallback(audioDeviceCallback) }
+            routeCallbackRegistered = false
+        }
         opusDecoder?.stop()
         opusDecoder = null
 
@@ -472,6 +561,13 @@ class WaveBridgeReceiver(
             audioTrack = null
         }
 
+        releasePowerLocks()
+
+        assembler.clear()
+        jitterBuffer.reset()
+    }
+
+    private fun releasePowerLocks() {
         multicastLock?.let { lock ->
             if (lock.isHeld) lock.release()
         }
@@ -484,9 +580,6 @@ class WaveBridgeReceiver(
         multicastLock = null
         wifiLock = null
         wakeLock = null
-
-        assembler.clear()
-        jitterBuffer.reset()
     }
 
     private fun reportError(message: String) {
@@ -545,6 +638,11 @@ private class PcmJitterBuffer {
     private val frames = TreeMap<Long, PcmFrame>()
     private var expectedSampleIndex: Long? = null
     private var frameSamples = 240
+    private var startFrames = 8
+    private var highWaterFrames = 24
+    private var maxFrames = 64
+    private var silenceFill = true
+    private var latencyTrim = true
 
     val queuedFrames: Int
         get() = synchronized(lock) { frames.size }
@@ -558,11 +656,22 @@ private class PcmJitterBuffer {
         }
     }
 
+    fun applySettings(settings: AudioSettings) {
+        synchronized(lock) {
+            val frameMs = (frameSamples * 1000 / WaveBridgeProtocol.NETWORK_SAMPLE_RATE).coerceAtLeast(1)
+            startFrames = (settings.startBufferMs / frameMs).coerceIn(1, 64)
+            highWaterFrames = (settings.maxLatencyMs / frameMs).coerceIn(startFrames + 1, 160)
+            maxFrames = (highWaterFrames * 2).coerceAtLeast(highWaterFrames + 1)
+            silenceFill = settings.silenceFill
+            latencyTrim = settings.latencyTrim
+        }
+    }
+
     fun offer(frame: PcmFrame) {
         synchronized(lock) {
             frameSamples = frame.frameSamples.coerceAtLeast(1)
             frames[frame.sampleIndex] = frame
-            while (frames.size > MAX_FRAMES) {
+            while (frames.size > maxFrames) {
                 frames.pollFirstEntry()
             }
             lock.notifyAll()
@@ -571,7 +680,7 @@ private class PcmJitterBuffer {
 
     fun waitForFrames(timeoutMs: Long) {
         synchronized(lock) {
-            if (frames.size < START_FRAMES) {
+            if (frames.size < startFrames) {
                 lock.wait(timeoutMs)
             }
         }
@@ -580,14 +689,14 @@ private class PcmJitterBuffer {
     fun nextFrame(): PlaybackResult {
         synchronized(lock) {
             if (expectedSampleIndex == null) {
-                if (frames.size < START_FRAMES) {
+                if (frames.size < startFrames) {
                     return PlaybackResult.Waiting
                 }
                 expectedSampleIndex = frames.firstKey()
             }
 
             val expected = expectedSampleIndex ?: return PlaybackResult.Waiting
-            if (frames.size > HIGH_WATER_FRAMES) {
+            if (latencyTrim && frames.size > highWaterFrames) {
                 frames.remove(expected)
                 expectedSampleIndex = expected + frameSamples
                 return PlaybackResult.DriftDrop
@@ -602,7 +711,11 @@ private class PcmJitterBuffer {
             val firstKey = frames.firstKeyOrNull() ?: return PlaybackResult.Waiting
             return if (firstKey > expected) {
                 expectedSampleIndex = expected + frameSamples
-                PlaybackResult.Silence(ByteArray(frameSamples * WaveBridgeProtocol.NETWORK_CHANNELS * 2))
+                if (silenceFill) {
+                    PlaybackResult.Silence(ByteArray(frameSamples * WaveBridgeProtocol.NETWORK_CHANNELS * 2))
+                } else {
+                    PlaybackResult.Waiting
+                }
             } else {
                 while (frames.isNotEmpty() && frames.firstKey() < expected) {
                     frames.pollFirstEntry()
@@ -613,12 +726,6 @@ private class PcmJitterBuffer {
     }
 
     private fun TreeMap<Long, PcmFrame>.firstKeyOrNull(): Long? = if (isEmpty()) null else firstKey()
-
-    companion object {
-        private const val START_FRAMES = 8
-        private const val HIGH_WATER_FRAMES = 24
-        private const val MAX_FRAMES = 64
-    }
 }
 
 private class FrameAssembler {

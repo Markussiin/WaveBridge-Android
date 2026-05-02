@@ -19,6 +19,8 @@ The first working receiver path is implemented:
 - reassembles chunked frames
 - runs as a foreground media-playback service while active
 - holds Wi-Fi/multicast/CPU locks only while receiving, then releases them on stop
+- includes one-tap audio presets for low latency, balanced listening, stability, and battery saving
+- exposes custom latency, buffer, playback, route, Opus, and power settings
 - uses a small jitter buffer to smooth UDP timing
 - fills missing PCM frames with silence instead of letting playback timing drift
 - trims the buffer if the phone falls behind, keeping latency bounded
@@ -72,6 +74,29 @@ WaveBridge.exe send --codec pcm --debug
 5. Play audio on the PC.
 
 The app should switch to `Playing` and the packet/frame counters should start increasing.
+
+## Audio Presets
+
+The receiver has four built-in profiles:
+
+- `Low latency`: smaller buffers for interactive audio and gaming.
+- `Balanced`: default profile for stable Wi-Fi and everyday listening.
+- `Studio`: larger buffers for the smoothest playback on weaker networks.
+- `Battery saver`: less aggressive Wi-Fi/audio behavior for longer sessions.
+
+The `Quality`, `Power`, and `Advanced` tabs let you tune the same settings manually:
+
+- start buffer
+- maximum latency before trimming old frames
+- Android `AudioTrack` buffer size
+- low-latency output mode
+- silence fill for missing frames
+- latency trim
+- route recovery
+- Opus advertisement when a device decoder is available
+- Wi-Fi low-latency lock
+- CPU wake lock
+- notification update frequency
 
 ## Protocol Compatibility
 

@@ -18,6 +18,7 @@ class WaveBridgeService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        ReceiverState.loadSettings(applicationContext)
         receiver = WaveBridgeReceiver(applicationContext) { next ->
             ReceiverState.stats = next
             maybeUpdateNotification(next)
@@ -29,6 +30,9 @@ class WaveBridgeService : Service() {
             ACTION_START -> {
                 startForeground(NOTIFICATION_ID, buildNotification(ReceiverState.stats.copy(running = true, status = "Starting")))
                 receiver.start()
+            }
+            ACTION_APPLY_SETTINGS -> {
+                receiver.applySettings(ReceiverState.settings)
             }
             ACTION_STOP -> {
                 receiver.stop()
@@ -95,6 +99,7 @@ class WaveBridgeService : Service() {
         private const val NOTIFICATION_ID = 37021
         const val ACTION_START = "com.example.wavebridge.START"
         const val ACTION_STOP = "com.example.wavebridge.STOP"
+        const val ACTION_APPLY_SETTINGS = "com.example.wavebridge.APPLY_SETTINGS"
 
         fun start(context: Context) {
             val intent = Intent(context, WaveBridgeService::class.java).setAction(ACTION_START)
@@ -107,6 +112,10 @@ class WaveBridgeService : Service() {
 
         fun stop(context: Context) {
             context.startService(Intent(context, WaveBridgeService::class.java).setAction(ACTION_STOP))
+        }
+
+        fun applySettings(context: Context) {
+            context.startService(Intent(context, WaveBridgeService::class.java).setAction(ACTION_APPLY_SETTINGS))
         }
     }
 }
