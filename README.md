@@ -99,4 +99,7 @@ The protocol already has packet types for future control messages such as start,
 
 ## License
 
-No license has been selected yet. Treat the code as source-available until a license is added.
+Licensed under the [Apache License 2.0](LICENSE).
+
+Redistributions and derivative works must retain the attribution notice in
+[NOTICE](NOTICE), which credits Markuss Kruze as the original creator.
