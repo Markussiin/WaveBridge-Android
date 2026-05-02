@@ -94,6 +94,37 @@ object WaveBridgeProtocol {
         return AudioPacket(header, payload)
     }
 
+    fun makeControlPacket(
+        type: PacketType,
+        codec: AudioCodec,
+        streamId: Long,
+        sequence: Long,
+        frameSamples: Int,
+    ): ByteArray {
+        require(type != PacketType.Audio) { "control packet type cannot be Audio" }
+        val buffer = ByteArray(AUDIO_HEADER_SIZE)
+        buffer[0] = 'P'.code.toByte()
+        buffer[1] = 'S'.code.toByte()
+        buffer[2] = 'N'.code.toByte()
+        buffer[3] = 'K'.code.toByte()
+        writeU16(buffer, 4, PROTOCOL_VERSION)
+        writeU16(buffer, 6, AUDIO_HEADER_SIZE)
+        buffer[8] = type.wireValue.toByte()
+        buffer[9] = codec.wireValue.toByte()
+        writeU16(buffer, 10, 0)
+        writeU32(buffer, 12, streamId)
+        writeU64(buffer, 16, sequence)
+        writeU64(buffer, 24, 0)
+        writeU32(buffer, 32, NETWORK_SAMPLE_RATE.toLong())
+        writeU16(buffer, 36, NETWORK_CHANNELS)
+        writeU16(buffer, 38, frameSamples)
+        writeU16(buffer, 40, 0)
+        writeU16(buffer, 42, 1)
+        writeU16(buffer, 44, 0)
+        writeU16(buffer, 46, 0)
+        return buffer
+    }
+
     private fun u8(buffer: ByteArray, offset: Int): Int = buffer[offset].toInt() and 0xff
 
     private fun u16(buffer: ByteArray, offset: Int): Int {
@@ -113,5 +144,22 @@ object WaveBridgeProtocol {
             value = (value shl 8) or u8(buffer, offset + index).toLong()
         }
         return value
+    }
+
+    private fun writeU16(buffer: ByteArray, offset: Int, value: Int) {
+        buffer[offset] = (value and 0xff).toByte()
+        buffer[offset + 1] = ((value ushr 8) and 0xff).toByte()
+    }
+
+    private fun writeU32(buffer: ByteArray, offset: Int, value: Long) {
+        for (index in 0 until 4) {
+            buffer[offset + index] = ((value ushr (index * 8)) and 0xff).toByte()
+        }
+    }
+
+    private fun writeU64(buffer: ByteArray, offset: Int, value: Long) {
+        for (index in 0 until 8) {
+            buffer[offset + index] = ((value ushr (index * 8)) and 0xff).toByte()
+        }
     }
 }

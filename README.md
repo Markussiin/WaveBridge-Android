@@ -13,14 +13,21 @@ https://github.com/Markussiin/WaveBridge
 The first working receiver path is implemented:
 
 - listens for WaveBridge UDP discovery on port `37020`
-- replies as a phone receiver with PCM support
+- replies as a phone receiver with PCM support, plus Opus when a device decoder is available
 - receives audio packets on UDP port `37021`
 - parses the `PSNK` binary packet header manually
 - reassembles chunked frames
+- runs as a foreground media-playback service while active
+- holds Wi-Fi/multicast/CPU locks only while receiving, then releases them on stop
+- uses a small jitter buffer to smooth UDP timing
+- fills missing PCM frames with silence instead of letting playback timing drift
+- trims the buffer if the phone falls behind, keeping latency bounded
+- rebuilds `AudioTrack` when the phone audio route changes
+- replies to sender Ping packets with Pong keepalives
 - plays 48 kHz stereo PCM S16LE through `AudioTrack`
-- shows receiver state, sender address, packet/frame counters, invalid packet count, and sequence gap count
+- shows receiver state, sender address, route, power mode, buffer, packet/frame, loss, underrun, and drift stats
 
-Opus is not implemented on Android yet. Use the Windows sender with the default PCM path:
+Opus decoding is experimental and depends on Android `MediaCodec` support on the device. Use the Windows sender with the default PCM path first:
 
 ```powershell
 WaveBridge.exe send --codec pcm --debug
@@ -72,28 +79,26 @@ This app expects the current WaveBridge packet format:
 
 - discovery: UTF-8 JSON over UDP
 - audio: manually serialized `PSNK` binary UDP packets
-- codec: PCM S16 only for now
+- codec: PCM S16, plus experimental Opus when device decoding is available
 - sample rate: 48 kHz
 - channels: stereo
 - default audio port: `37021`
 - default discovery port: `37020`
 
-The protocol already has packet types for future control messages such as start, stop, ping, and pong, but the current Android runtime focuses on discovery and audio playback.
+The app handles Start, Stop, Ping, and Pong control packets. Ping/Pong keeps the sender and receiver aware of each other without a noisy polling loop.
 
 ## Troubleshooting
 
 - If the phone does not appear, make sure the PC and phone are on the same network.
 - Disable guest Wi-Fi/client isolation if your router has it enabled.
-- Keep the phone screen awake while testing.
+- Keep the app running with the foreground notification while testing.
 - Use `--debug` on the Windows sender to confirm discovery and packet flow.
-- Use PCM first; Opus is planned but not ready on Android.
+- Use PCM first; Opus support depends on the device decoder and may need more tuning.
 
 ## Roadmap
 
-- Add Opus decoding.
-- Add jitter buffer tuning and better packet loss handling.
-- Add start/stop/ping/pong control packet handling.
-- Add foreground service mode so playback can continue with the screen off.
+- Tune Opus decoding across more Android devices.
+- Add user-adjustable latency presets.
 - Improve latency controls and diagnostics.
 - Add a cleaner package/application id before publishing.
 

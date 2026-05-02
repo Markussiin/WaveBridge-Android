@@ -1,9 +1,14 @@
 package com.example.wavebridge
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -14,6 +19,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -23,9 +30,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -34,30 +38,28 @@ import androidx.compose.ui.unit.dp
 import com.example.wavebridge.ui.theme.WaveBridgeTheme
 
 class MainActivity : ComponentActivity() {
-    private lateinit var receiver: WaveBridgeReceiver
-    private var stats by mutableStateOf(ReceiverStats())
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        receiver = WaveBridgeReceiver(applicationContext) { next ->
-            runOnUiThread { stats = next }
-        }
+        requestNotificationPermissionIfNeeded()
 
         enableEdgeToEdge()
         setContent {
             WaveBridgeTheme {
                 ReceiverScreen(
-                    stats = stats,
-                    onStart = receiver::start,
-                    onStop = receiver::stop,
+                    stats = ReceiverState.stats,
+                    onStart = { WaveBridgeService.start(applicationContext) },
+                    onStop = { WaveBridgeService.stop(applicationContext) },
                 )
             }
         }
     }
 
-    override fun onDestroy() {
-        receiver.shutdown()
-        super.onDestroy()
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 37021)
     }
 }
 
@@ -77,6 +79,7 @@ private fun ReceiverScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
@@ -201,7 +204,13 @@ private fun DetailCard(stats: ReceiverStats) {
             DetailRow("Sender", stats.lastSender)
             DetailRow("Codec", stats.lastCodec)
             DetailRow("Frame samples", stats.lastFrameSamples.toString())
+            DetailRow("Queued frames", stats.queuedFrames.toString())
+            DetailRow("Underruns", stats.underruns.toString())
+            DetailRow("Silence fills", stats.silenceFrames.toString())
+            DetailRow("Drift corrections", stats.driftCorrections.toString())
             DetailRow("Sequence gaps", stats.sequenceGaps.toString())
+            DetailRow("Audio route", stats.audioRoute)
+            DetailRow("Power", stats.powerMode)
         }
     }
 }
