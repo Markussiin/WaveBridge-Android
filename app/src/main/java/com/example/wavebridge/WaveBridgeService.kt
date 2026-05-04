@@ -70,7 +70,7 @@ class WaveBridgeService : Service() {
         }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_stat_wavebridge)
             .setContentTitle("WaveBridge receiver")
             .setContentText(text)
             .setOngoing(stats.running)

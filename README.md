@@ -21,6 +21,7 @@ The first working receiver path is implemented:
 - holds Wi-Fi/multicast/CPU locks only while receiving, then releases them on stop
 - includes one-tap audio presets for low latency, balanced listening, stability, and battery saving
 - exposes custom latency, buffer, playback, route, Opus, and power settings
+- adapts receiver latency while playing by expanding after underruns and tightening after stable playback
 - adds optional software audio effects for bass boost, loudness, stereo widening, and five-band EQ tuning
 - uses a small jitter buffer to smooth UDP timing
 - fills missing PCM frames with silence instead of letting playback timing drift
@@ -89,6 +90,7 @@ The `Quality`, `Power`, and `Advanced` tabs let you tune the same settings manua
 
 - start buffer
 - maximum latency before trimming old frames
+- adaptive latency mode with minimum and maximum target bounds
 - Android `AudioTrack` buffer size
 - low-latency output mode
 - silence fill for missing frames
@@ -112,6 +114,10 @@ Available controls:
 - five-band equalizer: low, low mid, mid, high mid, and high
 
 When effects are disabled the processor is idle, keeping the normal low-latency receiver path as lightweight as possible.
+
+## Adaptive Latency
+
+Adaptive latency is enabled by default. The receiver starts from the selected profile, raises its jitter-buffer target when underruns happen, then slowly lowers the target again after clean playback. The `Quality` tab shows the current target and buffer health so tuning is visible while audio is playing.
 
 ## Protocol Compatibility
 

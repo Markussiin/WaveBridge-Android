@@ -34,6 +34,9 @@ data class AudioSettings(
     val startBufferMs: Int = 40,
     val maxLatencyMs: Int = 140,
     val audioTrackBufferMs: Int = 200,
+    val adaptiveLatency: Boolean = true,
+    val adaptiveMinLatencyMs: Int = 25,
+    val adaptiveMaxLatencyMs: Int = 180,
     val lowLatencyTrack: Boolean = true,
     val silenceFill: Boolean = true,
     val latencyTrim: Boolean = true,
@@ -62,6 +65,9 @@ data class AudioSettings(
                     startBufferMs = 20,
                     maxLatencyMs = 70,
                     audioTrackBufferMs = 120,
+                    adaptiveLatency = true,
+                    adaptiveMinLatencyMs = 15,
+                    adaptiveMaxLatencyMs = 70,
                     lowLatencyTrack = true,
                     silenceFill = true,
                     latencyTrim = true,
@@ -76,6 +82,9 @@ data class AudioSettings(
                     startBufferMs = 40,
                     maxLatencyMs = 140,
                     audioTrackBufferMs = 200,
+                    adaptiveLatency = true,
+                    adaptiveMinLatencyMs = 25,
+                    adaptiveMaxLatencyMs = 160,
                     lowLatencyTrack = true,
                     silenceFill = true,
                     latencyTrim = true,
@@ -90,6 +99,9 @@ data class AudioSettings(
                     startBufferMs = 80,
                     maxLatencyMs = 260,
                     audioTrackBufferMs = 360,
+                    adaptiveLatency = true,
+                    adaptiveMinLatencyMs = 55,
+                    adaptiveMaxLatencyMs = 300,
                     lowLatencyTrack = false,
                     silenceFill = true,
                     latencyTrim = true,
@@ -104,6 +116,9 @@ data class AudioSettings(
                     startBufferMs = 70,
                     maxLatencyMs = 220,
                     audioTrackBufferMs = 280,
+                    adaptiveLatency = true,
+                    adaptiveMinLatencyMs = 55,
+                    adaptiveMaxLatencyMs = 260,
                     lowLatencyTrack = false,
                     silenceFill = true,
                     latencyTrim = true,
@@ -255,6 +270,9 @@ object AudioSettingsStore {
             startBufferMs = prefs.getInt("startBufferMs", AudioSettings.preset(preset).startBufferMs),
             maxLatencyMs = prefs.getInt("maxLatencyMs", AudioSettings.preset(preset).maxLatencyMs),
             audioTrackBufferMs = prefs.getInt("audioTrackBufferMs", AudioSettings.preset(preset).audioTrackBufferMs),
+            adaptiveLatency = prefs.getBoolean("adaptiveLatency", AudioSettings.preset(preset).adaptiveLatency),
+            adaptiveMinLatencyMs = prefs.getInt("adaptiveMinLatencyMs", AudioSettings.preset(preset).adaptiveMinLatencyMs),
+            adaptiveMaxLatencyMs = prefs.getInt("adaptiveMaxLatencyMs", AudioSettings.preset(preset).adaptiveMaxLatencyMs),
             lowLatencyTrack = prefs.getBoolean("lowLatencyTrack", AudioSettings.preset(preset).lowLatencyTrack),
             silenceFill = prefs.getBoolean("silenceFill", AudioSettings.preset(preset).silenceFill),
             latencyTrim = prefs.getBoolean("latencyTrim", AudioSettings.preset(preset).latencyTrim),
@@ -284,6 +302,9 @@ object AudioSettingsStore {
             .putInt("startBufferMs", settings.startBufferMs)
             .putInt("maxLatencyMs", settings.maxLatencyMs)
             .putInt("audioTrackBufferMs", settings.audioTrackBufferMs)
+            .putBoolean("adaptiveLatency", settings.adaptiveLatency)
+            .putInt("adaptiveMinLatencyMs", settings.adaptiveMinLatencyMs)
+            .putInt("adaptiveMaxLatencyMs", settings.adaptiveMaxLatencyMs)
             .putBoolean("lowLatencyTrack", settings.lowLatencyTrack)
             .putBoolean("silenceFill", settings.silenceFill)
             .putBoolean("latencyTrim", settings.latencyTrim)
@@ -318,6 +339,9 @@ object ReceiverState {
                 presetName = settings.preset.title,
                 configuredLatencyMs = settings.maxLatencyMs,
                 audioTrackBufferMs = settings.audioTrackBufferMs,
+                adaptiveLatencyMs = settings.startBufferMs,
+                adaptiveMode = if (settings.adaptiveLatency) "Adaptive" else "Fixed",
+                bufferHealth = if (settings.adaptiveLatency) "Ready" else "Fixed",
                 effectsStatus = settings.requestedEffectsStatus(),
             )
         }
@@ -333,6 +357,9 @@ object ReceiverState {
                 presetName = settings.preset.title,
                 configuredLatencyMs = settings.maxLatencyMs,
                 audioTrackBufferMs = settings.audioTrackBufferMs,
+                adaptiveLatencyMs = settings.startBufferMs,
+                adaptiveMode = if (settings.adaptiveLatency) "Adaptive" else "Fixed",
+                bufferHealth = if (settings.adaptiveLatency) "Ready" else "Fixed",
                 effectsStatus = settings.requestedEffectsStatus(),
             )
         }

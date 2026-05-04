@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,6 +46,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -99,7 +102,16 @@ private fun WaveBridgeApp(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .background(MaterialTheme.colorScheme.background),
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.background,
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
+                            MaterialTheme.colorScheme.background,
+                        ),
+                    ),
+                ),
+            color = Color.Transparent,
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 AppHeader(stats = stats, onStart = onStart, onStop = onStop)
@@ -118,7 +130,7 @@ private fun WaveBridgeApp(
                 ) {
                     when (tab) {
                         0 -> MonitorTab(stats)
-                        1 -> QualityTab(settings, onSettings)
+                        1 -> QualityTab(settings, stats, onSettings)
                         2 -> EffectsTab(settings, stats, onSettings)
                         3 -> PowerTab(settings, onSettings)
                         else -> AdvancedTab(settings, stats, onSettings)
@@ -135,34 +147,73 @@ private fun AppHeader(
     onStart: () -> Unit,
     onStop: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 18.dp, vertical = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        tonalElevation = 2.dp,
+        shadowElevation = 1.dp,
     ) {
-        Box(
+        Row(
             modifier = Modifier
-                .size(44.dp)
-                .clip(CircleShape)
-                .background(if (stats.running) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center,
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = "W",
-                color = if (stats.running) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Bold,
-            )
+            BrandMark(active = stats.running)
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("WaveBridge", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text(
+                    text = "${stats.status} | ${stats.adaptiveMode} ${stats.adaptiveLatencyMs} ms",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (stats.running) {
+                OutlinedButton(onClick = onStop, shape = MaterialTheme.shapes.medium) { Text("Stop") }
+            } else {
+                Button(onClick = onStart, shape = MaterialTheme.shapes.medium) { Text("Start") }
+            }
         }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text("WaveBridge", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-            Text(stats.status, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        if (stats.running) {
-            OutlinedButton(onClick = onStop) { Text("Stop") }
-        } else {
-            Button(onClick = onStart) { Text("Start") }
+    }
+}
+
+@Composable
+private fun BrandMark(active: Boolean, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .size(46.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .background(
+                Brush.linearGradient(
+                    listOf(
+                        if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                        MaterialTheme.colorScheme.secondary.copy(alpha = if (active) 0.8f else 0.25f),
+                    ),
+                ),
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            listOf(14.dp, 24.dp, 18.dp, 30.dp, 16.dp).forEachIndexed { index, height ->
+                Box(
+                    Modifier
+                        .width(4.dp)
+                        .height(height)
+                        .clip(CircleShape)
+                        .background(
+                            if (index == 3) {
+                                MaterialTheme.colorScheme.tertiary
+                            } else if (active) {
+                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.92f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
+                            },
+                        ),
+                )
+            }
         }
     }
 }
@@ -182,7 +233,11 @@ private fun MonitorTab(stats: ReceiverStats) {
 }
 
 @Composable
-private fun QualityTab(settings: AudioSettings, onSettings: (AudioSettings) -> Unit) {
+private fun QualityTab(
+    settings: AudioSettings,
+    stats: ReceiverStats,
+    onSettings: (AudioSettings) -> Unit,
+) {
     SectionCard("Presets", "Choose the audio profile that matches the network and use case.") {
         AudioPreset.entries.filter { it != AudioPreset.Custom }.forEach { preset ->
             PresetRow(
@@ -194,6 +249,8 @@ private fun QualityTab(settings: AudioSettings, onSettings: (AudioSettings) -> U
     }
 
     SectionCard("Latency and Buffering", "Lower values feel faster; higher values survive rough Wi-Fi better.") {
+        DetailRow("Current target", "${stats.adaptiveMode} ${stats.adaptiveLatencyMs} ms")
+        DetailRow("Buffer health", stats.bufferHealth)
         SettingSlider(
             label = "Start buffer",
             value = settings.startBufferMs,
@@ -208,7 +265,16 @@ private fun QualityTab(settings: AudioSettings, onSettings: (AudioSettings) -> U
             range = 50f..360f,
             step = 10,
             unit = "ms",
-            onChange = { onSettings(settings.copy(preset = AudioPreset.Custom, maxLatencyMs = it.coerceAtLeast(settings.startBufferMs + 10))) },
+            onChange = {
+                val next = it.coerceAtLeast(settings.startBufferMs + 10)
+                onSettings(
+                    settings.copy(
+                        preset = AudioPreset.Custom,
+                        maxLatencyMs = next,
+                        adaptiveMaxLatencyMs = settings.adaptiveMaxLatencyMs.coerceAtMost(next),
+                    ),
+                )
+            },
         )
         SettingSlider(
             label = "AudioTrack buffer",
@@ -217,6 +283,44 @@ private fun QualityTab(settings: AudioSettings, onSettings: (AudioSettings) -> U
             step = 20,
             unit = "ms",
             onChange = { onSettings(settings.copy(preset = AudioPreset.Custom, audioTrackBufferMs = it)) },
+        )
+    }
+
+    SectionCard("Adaptive Latency", "Automatically expands after underruns and tightens again after stable playback.") {
+        SettingSwitch("Adaptive latency", "Let WaveBridge tune the jitter buffer while audio is playing.", settings.adaptiveLatency) {
+            onSettings(settings.copy(preset = AudioPreset.Custom, adaptiveLatency = it))
+        }
+        SettingSlider(
+            label = "Adaptive minimum",
+            value = settings.adaptiveMinLatencyMs,
+            range = 10f..160f,
+            step = 5,
+            unit = "ms",
+            onChange = {
+                onSettings(
+                    settings.copy(
+                        preset = AudioPreset.Custom,
+                        adaptiveMinLatencyMs = it.coerceAtMost(settings.adaptiveMaxLatencyMs - 5),
+                    ),
+                )
+            },
+        )
+        SettingSlider(
+            label = "Adaptive maximum",
+            value = settings.adaptiveMaxLatencyMs,
+            range = 50f..360f,
+            step = 10,
+            unit = "ms",
+            onChange = {
+                val next = it.coerceAtLeast(settings.adaptiveMinLatencyMs + 5)
+                onSettings(
+                    settings.copy(
+                        preset = AudioPreset.Custom,
+                        adaptiveMaxLatencyMs = next,
+                        maxLatencyMs = settings.maxLatencyMs.coerceAtLeast(next),
+                    ),
+                )
+            },
         )
     }
 
@@ -373,6 +477,8 @@ private fun AdvancedTab(
         }
         DetailRow("Active preset", stats.presetName)
         DetailRow("Configured latency", "${stats.configuredLatencyMs} ms")
+        DetailRow("Adaptive target", "${stats.adaptiveLatencyMs} ms")
+        DetailRow("Buffer health", stats.bufferHealth)
         DetailRow("AudioTrack buffer", "${stats.audioTrackBufferMs} ms")
         DetailRow("Power mode", stats.powerMode)
     }
@@ -393,13 +499,25 @@ private fun AdvancedTab(
 @Composable
 private fun StatusPanel(stats: ReceiverStats) {
     Card(
+        shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
-            containerColor = if (stats.running) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+            containerColor = if (stats.running) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
         ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.24f)),
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(if (stats.running) "Receiver active" else "Receiver stopped", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(9.dp)
+                        .clip(CircleShape)
+                        .background(if (stats.running) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(if (stats.running) "Receiver active" else "Receiver stopped", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            }
             Text("Preset ${stats.presetName} | latency ${stats.configuredLatencyMs} ms", style = MaterialTheme.typography.bodyMedium)
+            Text("${stats.adaptiveMode} target ${stats.adaptiveLatencyMs} ms | ${stats.bufferHealth}", style = MaterialTheme.typography.bodyMedium)
             Text("Discovery ${stats.discoveryPort} | Audio ${stats.audioPort}", style = MaterialTheme.typography.bodyMedium)
             if (stats.error != null) {
                 Text(stats.error, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
@@ -414,6 +532,8 @@ private fun DetailsPanel(stats: ReceiverStats) {
         DetailRow("Sender", stats.lastSender)
         DetailRow("Codec", stats.lastCodec)
         DetailRow("Frame samples", stats.lastFrameSamples.toString())
+        DetailRow("Adaptive target", "${stats.adaptiveLatencyMs} ms")
+        DetailRow("Buffer health", stats.bufferHealth)
         DetailRow("Audio route", stats.audioRoute)
         DetailRow("Power", stats.powerMode)
         DetailRow("Effects", stats.effectsStatus)
@@ -425,10 +545,14 @@ private fun DetailsPanel(stats: ReceiverStats) {
 
 @Composable
 private fun MetricCard(label: String, value: String, modifier: Modifier = Modifier) {
-    Card(modifier = modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-        Column(modifier = Modifier.padding(16.dp)) {
+    Card(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(4.dp))
             Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         }
     }
@@ -439,6 +563,7 @@ private fun PresetRow(preset: AudioPreset, selected: Boolean, onClick: () -> Uni
     FilterChip(
         selected = selected,
         onClick = onClick,
+        shape = MaterialTheme.shapes.medium,
         label = {
             Column(Modifier.padding(vertical = 4.dp)) {
                 Text(preset.title, fontWeight = FontWeight.SemiBold)
@@ -454,6 +579,7 @@ private fun EffectPresetRow(preset: AudioEffectPreset, selected: Boolean, onClic
     FilterChip(
         selected = selected,
         onClick = onClick,
+        shape = MaterialTheme.shapes.medium,
         label = {
             Column(Modifier.padding(vertical = 4.dp)) {
                 Text(preset.title, fontWeight = FontWeight.SemiBold)
@@ -470,10 +596,25 @@ private fun SectionCard(
     subtitle: String,
     content: @Composable () -> Unit,
 ) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+    Card(
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)),
+    ) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
+                )
+                Spacer(Modifier.width(8.dp))
+                Column {
+                    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
             HorizontalDivider()
             content()
         }
@@ -582,6 +723,9 @@ private fun WaveBridgeAppPreview() {
                 audioRoute = "USB-C headphones",
                 powerMode = "multicast+wifi-low-latency+wake",
                 effectsStatus = "bass+eq",
+                adaptiveLatencyMs = 35,
+                adaptiveMode = "Adaptive",
+                bufferHealth = "Stable",
             ),
             settings = AudioSettings.preset(AudioPreset.Balanced),
             onStart = {},

@@ -46,6 +46,9 @@ data class ReceiverStats(
     val presetName: String = AudioPreset.Balanced.title,
     val configuredLatencyMs: Int = 140,
     val audioTrackBufferMs: Int = 200,
+    val adaptiveLatencyMs: Int = 40,
+    val adaptiveMode: String = "Adaptive",
+    val bufferHealth: String = "Idle",
     val error: String? = null,
 )
 
@@ -139,7 +142,7 @@ class WaveBridgeReceiver(
     fun stop() {
         if (!running.compareAndSet(true, false)) return
         closeResources()
-        updateStats { copy(running = false, status = "Stopped", powerMode = "Idle", effectsStatus = "off", queuedFrames = 0) }
+        updateStats { copy(running = false, status = "Stopped", powerMode = "Idle", effectsStatus = settings.requestedEffectsStatus(), queuedFrames = 0) }
     }
 
     fun shutdown() {
@@ -157,7 +160,7 @@ class WaveBridgeReceiver(
                     configuredLatencyMs = next.maxLatencyMs,
                     audioTrackBufferMs = next.audioTrackBufferMs,
                     powerMode = "Idle",
-                    effectsStatus = if (next.effectsEnabled) "pending" else "off",
+                    effectsStatus = next.requestedEffectsStatus(),
                 )
             }
             return
@@ -631,8 +634,13 @@ class WaveBridgeReceiver(
     }
 
     private fun updateStats(block: ReceiverStats.() -> ReceiverStats) {
+        val bufferSnapshot = jitterBuffer.snapshot()
         val next = synchronized(statsLock) {
-            stats = stats.block()
+            stats = stats.block().copy(
+                adaptiveLatencyMs = bufferSnapshot.targetLatencyMs,
+                adaptiveMode = bufferSnapshot.mode,
+                bufferHealth = bufferSnapshot.health,
+            )
             stats
         }
         onStats(next)
@@ -677,47 +685,96 @@ private sealed class PlaybackResult {
     data object DriftDrop : PlaybackResult()
 }
 
+private data class BufferSnapshot(
+    val targetLatencyMs: Int,
+    val mode: String,
+    val health: String,
+)
+
 private class PcmJitterBuffer {
     private val lock = Object()
     private val frames = TreeMap<Long, PcmFrame>()
     private var expectedSampleIndex: Long? = null
     private var frameSamples = 240
+    private var frameMs = 5
     private var startFrames = 8
+    private var manualStartFrames = 8
+    private var minAdaptiveFrames = 4
+    private var maxAdaptiveFrames = 36
     private var highWaterFrames = 24
     private var maxFrames = 64
+    private var configuredStartMs = 40
+    private var configuredMaxLatencyMs = 140
+    private var configuredAdaptiveMinMs = 25
+    private var configuredAdaptiveMaxMs = 180
+    private var adaptiveLatency = true
     private var silenceFill = true
     private var latencyTrim = true
+    private var cleanFrames = 0
+    private var lastAdjustmentMs = 0L
+    private var lastHealth = "Idle"
 
     val queuedFrames: Int
         get() = synchronized(lock) { frames.size }
+
+    fun snapshot(): BufferSnapshot {
+        synchronized(lock) {
+            return BufferSnapshot(
+                targetLatencyMs = startFrames * frameMs,
+                mode = if (adaptiveLatency) "Adaptive" else "Fixed",
+                health = when {
+                    !adaptiveLatency -> "Fixed"
+                    frames.isEmpty() -> lastHealth
+                    frames.size < startFrames -> "Filling"
+                    frames.size > highWaterFrames -> "High"
+                    else -> lastHealth
+                },
+            )
+        }
+    }
 
     fun reset() {
         synchronized(lock) {
             frames.clear()
             expectedSampleIndex = null
             frameSamples = 240
+            frameMs = frameDurationMs(frameSamples)
+            cleanFrames = 0
+            lastHealth = "Idle"
             lock.notifyAll()
         }
     }
 
     fun applySettings(settings: AudioSettings) {
         synchronized(lock) {
-            val frameMs = (frameSamples * 1000 / WaveBridgeProtocol.NETWORK_SAMPLE_RATE).coerceAtLeast(1)
-            startFrames = (settings.startBufferMs / frameMs).coerceIn(1, 64)
-            highWaterFrames = (settings.maxLatencyMs / frameMs).coerceIn(startFrames + 1, 160)
-            maxFrames = (highWaterFrames * 2).coerceAtLeast(highWaterFrames + 1)
+            val latencyControlsChanged = configuredStartMs != settings.startBufferMs ||
+                configuredMaxLatencyMs != settings.maxLatencyMs ||
+                configuredAdaptiveMinMs != settings.adaptiveMinLatencyMs ||
+                configuredAdaptiveMaxMs != settings.adaptiveMaxLatencyMs ||
+                adaptiveLatency != settings.adaptiveLatency
+            configuredStartMs = settings.startBufferMs
+            configuredMaxLatencyMs = settings.maxLatencyMs
+            configuredAdaptiveMinMs = settings.adaptiveMinLatencyMs
+            configuredAdaptiveMaxMs = settings.adaptiveMaxLatencyMs
+            adaptiveLatency = settings.adaptiveLatency
             silenceFill = settings.silenceFill
             latencyTrim = settings.latencyTrim
+            configureFrameTargetsLocked(preserveAdaptiveTarget = !latencyControlsChanged)
         }
     }
 
     fun offer(frame: PcmFrame) {
         synchronized(lock) {
-            frameSamples = frame.frameSamples.coerceAtLeast(1)
+            val nextFrameSamples = frame.frameSamples.coerceAtLeast(1)
+            if (nextFrameSamples != frameSamples) {
+                frameSamples = nextFrameSamples
+                configureFrameTargetsLocked(preserveAdaptiveTarget = true)
+            }
             frames[frame.sampleIndex] = frame
             while (frames.size > maxFrames) {
                 frames.pollFirstEntry()
             }
+            lastHealth = if (frames.size < startFrames) "Filling" else "Stable"
             lock.notifyAll()
         }
     }
@@ -743,18 +800,22 @@ private class PcmJitterBuffer {
             if (latencyTrim && frames.size > highWaterFrames) {
                 frames.remove(expected)
                 expectedSampleIndex = expected + frameSamples
+                cleanFrames = 0
+                lastHealth = "Trimming"
                 return PlaybackResult.DriftDrop
             }
 
             val exact = frames.remove(expected)
             if (exact != null) {
                 expectedSampleIndex = expected + exact.frameSamples
+                registerCleanFrameLocked()
                 return PlaybackResult.Frame(exact.data)
             }
 
             val firstKey = frames.firstKeyOrNull() ?: return PlaybackResult.Waiting
             return if (firstKey > expected) {
                 expectedSampleIndex = expected + frameSamples
+                registerUnderrunLocked()
                 if (silenceFill) {
                     PlaybackResult.Silence(ByteArray(frameSamples * WaveBridgeProtocol.NETWORK_CHANNELS * 2))
                 } else {
@@ -767,6 +828,71 @@ private class PcmJitterBuffer {
                 PlaybackResult.Waiting
             }
         }
+    }
+
+    private fun configureFrameTargetsLocked(preserveAdaptiveTarget: Boolean) {
+        frameMs = frameDurationMs(frameSamples)
+        manualStartFrames = msToFrames(configuredStartMs).coerceIn(1, 80)
+        val configuredMaxFrames = msToFrames(configuredMaxLatencyMs).coerceAtLeast(manualStartFrames + 2)
+        minAdaptiveFrames = msToFrames(configuredAdaptiveMinMs).coerceIn(1, configuredMaxFrames - 1)
+        val adaptiveCeilingFrames = (configuredMaxFrames - 2).coerceAtLeast(minAdaptiveFrames + 1)
+        maxAdaptiveFrames = msToFrames(configuredAdaptiveMaxMs)
+            .coerceIn(minAdaptiveFrames + 1, adaptiveCeilingFrames)
+
+        startFrames = if (adaptiveLatency) {
+            val current = if (preserveAdaptiveTarget) startFrames else manualStartFrames
+            current.coerceIn(minAdaptiveFrames, maxAdaptiveFrames)
+        } else {
+            manualStartFrames
+        }
+
+        highWaterFrames = configuredMaxFrames.coerceAtLeast(startFrames + 2)
+        maxFrames = (highWaterFrames * 2).coerceAtLeast(highWaterFrames + 1)
+        lastHealth = if (adaptiveLatency) "Stable" else "Fixed"
+    }
+
+    private fun registerUnderrunLocked() {
+        cleanFrames = 0
+        if (!adaptiveLatency) {
+            lastHealth = "Underrun"
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        if (now - lastAdjustmentMs >= 350 && startFrames < maxAdaptiveFrames) {
+            startFrames = (startFrames + 2).coerceAtMost(maxAdaptiveFrames)
+            highWaterFrames = highWaterFrames.coerceAtLeast(startFrames + 2)
+            lastAdjustmentMs = now
+            lastHealth = "Expanding"
+        } else {
+            lastHealth = "Recovering"
+        }
+    }
+
+    private fun registerCleanFrameLocked() {
+        if (!adaptiveLatency) {
+            lastHealth = "Fixed"
+            return
+        }
+
+        cleanFrames += 1
+        val now = System.currentTimeMillis()
+        if (cleanFrames >= 600 && now - lastAdjustmentMs >= 2500 && startFrames > minAdaptiveFrames) {
+            startFrames -= 1
+            lastAdjustmentMs = now
+            cleanFrames = 0
+            lastHealth = "Tightening"
+        } else {
+            lastHealth = "Stable"
+        }
+    }
+
+    private fun frameDurationMs(samples: Int): Int {
+        return (samples * 1000 / WaveBridgeProtocol.NETWORK_SAMPLE_RATE).coerceAtLeast(1)
+    }
+
+    private fun msToFrames(ms: Int): Int {
+        return ((ms + frameMs - 1) / frameMs).coerceAtLeast(1)
     }
 
     private fun TreeMap<Long, PcmFrame>.firstKeyOrNull(): Long? = if (isEmpty()) null else firstKey()
