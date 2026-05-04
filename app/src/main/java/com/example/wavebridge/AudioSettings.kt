@@ -222,6 +222,20 @@ data class AudioSettings(
     }
 }
 
+fun AudioSettings.requestedEffectsStatus(): String {
+    if (!effectsEnabled) return "off"
+
+    val parts = mutableListOf<String>()
+    if (bassBoostStrength > 0) parts += "bass"
+    if (equalizerEnabled && listOf(eqLowGain, eqLowMidGain, eqMidGain, eqHighMidGain, eqHighGain).any { it != 0 }) {
+        parts += "eq"
+    }
+    if (loudnessGainMb > 0) parts += "loudness"
+    if (virtualizerStrength > 0) parts += "wide"
+
+    return if (parts.isEmpty()) "flat" else "software:${parts.joinToString("+")}"
+}
+
 object AudioSettingsStore {
     private const val PREFS = "wavebridge_audio_settings"
 
@@ -299,6 +313,14 @@ object ReceiverState {
 
     fun loadSettings(context: Context) {
         settings = AudioSettingsStore.load(context)
+        if (!stats.running) {
+            stats = stats.copy(
+                presetName = settings.preset.title,
+                configuredLatencyMs = settings.maxLatencyMs,
+                audioTrackBufferMs = settings.audioTrackBufferMs,
+                effectsStatus = settings.requestedEffectsStatus(),
+            )
+        }
     }
 
     fun updateSettings(context: Context, next: AudioSettings) {
@@ -306,6 +328,13 @@ object ReceiverState {
         AudioSettingsStore.save(context, settings)
         if (stats.running) {
             WaveBridgeService.applySettings(context)
+        } else {
+            stats = stats.copy(
+                presetName = settings.preset.title,
+                configuredLatencyMs = settings.maxLatencyMs,
+                audioTrackBufferMs = settings.audioTrackBufferMs,
+                effectsStatus = settings.requestedEffectsStatus(),
+            )
         }
     }
 }

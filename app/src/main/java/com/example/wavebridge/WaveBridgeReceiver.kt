@@ -406,6 +406,7 @@ class WaveBridgeReceiver(
 
     private fun writePcm(data: ByteArray) {
         synchronized(trackLock) {
+            effectsController.processPcm16InPlace(data)
             val written = audioTrack?.write(data, 0, data.size, AudioTrack.WRITE_BLOCKING) ?: AudioTrack.ERROR_INVALID_OPERATION
             if (written < 0) {
                 reportError("AudioTrack write failed: $written")

@@ -1,195 +1,169 @@
-@file:Suppress("DEPRECATION")
-
 package com.example.wavebridge
 
-import android.media.audiofx.BassBoost
-import android.media.audiofx.Equalizer
-import android.media.audiofx.LoudnessEnhancer
-import android.media.audiofx.Virtualizer
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 class AudioEffectsController {
-    private var audioSessionId: Int = -1
-    private var bassBoost: BassBoost? = null
-    private var equalizer: Equalizer? = null
-    private var loudnessEnhancer: LoudnessEnhancer? = null
-    private var virtualizer: Virtualizer? = null
+    private var processingEnabled = false
+    private var bassAmount = 0f
+    private var bassLeft = 0f
+    private var bassRight = 0f
+    private var bassAlpha = 0f
+    private var loudnessGain = 1f
+    private var stereoWidth = 1f
+    private var leftEq = emptyList<Biquad>()
+    private var rightEq = emptyList<Biquad>()
 
-    fun attach(sessionId: Int, settings: AudioSettings): String {
-        if (sessionId <= 0) {
-            release()
-            return "off"
-        }
-        if (audioSessionId != sessionId) {
-            releaseEffects()
-            audioSessionId = sessionId
-        }
+    fun attach(@Suppress("UNUSED_PARAMETER") sessionId: Int, settings: AudioSettings): String {
         return apply(settings)
     }
 
     fun apply(settings: AudioSettings): String {
-        if (!settings.effectsEnabled) {
-            release()
-            return "off"
+        release()
+        if (!settings.effectsEnabled) return "off"
+
+        bassAmount = settings.bassBoostStrength.coerceIn(0, 1000) / 1000f * 1.65f
+        bassAlpha = onePoleAlpha(155f, WaveBridgeProtocol.NETWORK_SAMPLE_RATE.toFloat())
+        loudnessGain = 10f.pow(settings.loudnessGainMb.coerceIn(0, 600) / 2000f)
+        stereoWidth = 1f + settings.virtualizerStrength.coerceIn(0, 1000) / 1000f * 0.65f
+
+        val eqGains = if (settings.equalizerEnabled) {
+            listOf(
+                EqBand(75f, 0.85f, settings.eqLowGain),
+                EqBand(240f, 0.95f, settings.eqLowMidGain),
+                EqBand(1000f, 1.0f, settings.eqMidGain),
+                EqBand(3600f, 1.0f, settings.eqHighMidGain),
+                EqBand(9500f, 0.85f, settings.eqHighGain),
+            ).filter { it.gainMb != 0 }
+        } else {
+            emptyList()
         }
 
-        val active = mutableListOf<String>()
-        applyBassBoost(settings, active)
-        applyEqualizer(settings, active)
-        applyLoudness(settings, active)
-        applyVirtualizer(settings, active)
+        leftEq = eqGains.map { Biquad.peaking(it.frequencyHz, it.q, it.gainMb / 100f, WaveBridgeProtocol.NETWORK_SAMPLE_RATE.toFloat()) }
+        rightEq = eqGains.map { Biquad.peaking(it.frequencyHz, it.q, it.gainMb / 100f, WaveBridgeProtocol.NETWORK_SAMPLE_RATE.toFloat()) }
 
-        if (active.isEmpty()) {
-            release()
-            return "off"
+        processingEnabled = bassAmount > 0f ||
+            leftEq.isNotEmpty() ||
+            loudnessGain > 1.0001f ||
+            stereoWidth > 1.0001f
+
+        return settings.requestedEffectsStatus()
+    }
+
+    fun processPcm16InPlace(data: ByteArray) {
+        if (!processingEnabled) return
+
+        var offset = 0
+        while (offset + 3 < data.size) {
+            var left = readPcm16(data, offset) / 32768f
+            var right = readPcm16(data, offset + 2) / 32768f
+
+            for (filter in leftEq) left = filter.process(left)
+            for (filter in rightEq) right = filter.process(right)
+
+            if (bassAmount > 0f) {
+                bassLeft += bassAlpha * (left - bassLeft)
+                bassRight += bassAlpha * (right - bassRight)
+                left += bassLeft * bassAmount
+                right += bassRight * bassAmount
+            }
+
+            if (stereoWidth > 1.0001f) {
+                val mid = (left + right) * 0.5f
+                val side = (left - right) * 0.5f * stereoWidth
+                left = mid + side
+                right = mid - side
+            }
+
+            if (loudnessGain > 1.0001f) {
+                left *= loudnessGain
+                right *= loudnessGain
+            }
+
+            writePcm16(data, offset, left)
+            writePcm16(data, offset + 2, right)
+            offset += 4
         }
-        return active.joinToString("+")
     }
 
     fun release() {
-        releaseEffects()
-        audioSessionId = -1
+        processingEnabled = false
+        bassAmount = 0f
+        bassLeft = 0f
+        bassRight = 0f
+        bassAlpha = 0f
+        loudnessGain = 1f
+        stereoWidth = 1f
+        leftEq = emptyList()
+        rightEq = emptyList()
     }
 
-    private fun applyBassBoost(settings: AudioSettings, active: MutableList<String>) {
-        val strength = settings.bassBoostStrength.coerceIn(0, 1000)
-        if (strength == 0) {
-            releaseBassBoost()
-            return
+    private fun readPcm16(data: ByteArray, offset: Int): Int {
+        val value = (data[offset].toInt() and 0xff) or (data[offset + 1].toInt() shl 8)
+        return value.toShort().toInt()
+    }
+
+    private fun writePcm16(data: ByteArray, offset: Int, value: Float) {
+        val sample = (value.coerceIn(-1f, 1f) * 32767f)
+            .roundToInt()
+            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+        data[offset] = (sample and 0xff).toByte()
+        data[offset + 1] = ((sample shr 8) and 0xff).toByte()
+    }
+
+    private fun onePoleAlpha(cutoffHz: Float, sampleRate: Float): Float {
+        return (1.0 - exp((-2.0 * PI * cutoffHz / sampleRate).toDouble())).toFloat()
+    }
+
+    private data class EqBand(
+        val frequencyHz: Float,
+        val q: Float,
+        val gainMb: Int,
+    )
+
+    private class Biquad(
+        private val b0: Float,
+        private val b1: Float,
+        private val b2: Float,
+        private val a1: Float,
+        private val a2: Float,
+    ) {
+        private var z1 = 0f
+        private var z2 = 0f
+
+        fun process(input: Float): Float {
+            val output = input * b0 + z1
+            z1 = input * b1 + z2 - a1 * output
+            z2 = input * b2 - a2 * output
+            return output
         }
 
-        val effect = bassBoost ?: runCatching {
-            BassBoost(0, audioSessionId).also { bassBoost = it }
-        }.getOrNull() ?: return
+        companion object {
+            fun peaking(frequencyHz: Float, q: Float, gainDb: Float, sampleRate: Float): Biquad {
+                val omega = 2.0 * PI * frequencyHz / sampleRate
+                val alpha = sin(omega) / (2.0 * q)
+                val cosOmega = cos(omega)
+                val amplitude = 10.0.pow(gainDb / 40.0)
 
-        val applied = runCatching {
-            effect.enabled = true
-            if (effect.strengthSupported) {
-                effect.setStrength(strength.toShort())
+                val b0 = 1.0 + alpha * amplitude
+                val b1 = -2.0 * cosOmega
+                val b2 = 1.0 - alpha * amplitude
+                val a0 = 1.0 + alpha / amplitude
+                val a1 = -2.0 * cosOmega
+                val a2 = 1.0 - alpha / amplitude
+
+                return Biquad(
+                    b0 = (b0 / a0).toFloat(),
+                    b1 = (b1 / a0).toFloat(),
+                    b2 = (b2 / a0).toFloat(),
+                    a1 = (a1 / a0).toFloat(),
+                    a2 = (a2 / a0).toFloat(),
+                )
             }
-        }.isSuccess
-
-        if (applied) active += "bass"
-    }
-
-    private fun applyEqualizer(settings: AudioSettings, active: MutableList<String>) {
-        if (!settings.equalizerEnabled) {
-            releaseEqualizer()
-            return
         }
-
-        val effect = equalizer ?: runCatching {
-            Equalizer(0, audioSessionId).also { equalizer = it }
-        }.getOrNull() ?: return
-
-        val applied = runCatching {
-            val bandCount = effect.numberOfBands.toInt().coerceAtLeast(0)
-            if (bandCount == 0) return@runCatching
-
-            val range = effect.bandLevelRange
-            val minGain = range[0].toInt()
-            val maxGain = range[1].toInt()
-            val gains = intArrayOf(
-                settings.eqLowGain,
-                settings.eqLowMidGain,
-                settings.eqMidGain,
-                settings.eqHighMidGain,
-                settings.eqHighGain,
-            )
-
-            for (band in 0 until bandCount) {
-                val gainIndex = if (bandCount == 1) {
-                    gains.lastIndex / 2
-                } else {
-                    (band.toFloat() * gains.lastIndex / (bandCount - 1).toFloat()).roundToInt()
-                }.coerceIn(0, gains.lastIndex)
-
-                val gain = gains[gainIndex].coerceIn(minGain, maxGain).toShort()
-                effect.setBandLevel(band.toShort(), gain)
-            }
-
-            effect.enabled = true
-        }.isSuccess
-
-        if (applied) active += "eq"
-    }
-
-    private fun applyLoudness(settings: AudioSettings, active: MutableList<String>) {
-        val gain = settings.loudnessGainMb.coerceIn(0, 1200)
-        if (gain == 0) {
-            releaseLoudness()
-            return
-        }
-
-        val effect = loudnessEnhancer ?: runCatching {
-            LoudnessEnhancer(audioSessionId).also { loudnessEnhancer = it }
-        }.getOrNull() ?: return
-
-        val applied = runCatching {
-            effect.setTargetGain(gain)
-            effect.enabled = true
-        }.isSuccess
-
-        if (applied) active += "loudness"
-    }
-
-    private fun applyVirtualizer(settings: AudioSettings, active: MutableList<String>) {
-        val strength = settings.virtualizerStrength.coerceIn(0, 1000)
-        if (strength == 0) {
-            releaseVirtualizer()
-            return
-        }
-
-        val effect = virtualizer ?: runCatching {
-            Virtualizer(0, audioSessionId).also { virtualizer = it }
-        }.getOrNull() ?: return
-
-        val applied = runCatching {
-            effect.enabled = true
-            if (effect.strengthSupported) {
-                effect.setStrength(strength.toShort())
-            }
-        }.isSuccess
-
-        if (applied) active += "virtualizer"
-    }
-
-    private fun releaseEffects() {
-        releaseBassBoost()
-        releaseEqualizer()
-        releaseLoudness()
-        releaseVirtualizer()
-    }
-
-    private fun releaseBassBoost() {
-        bassBoost?.let {
-            runCatching { it.enabled = false }
-            runCatching { it.release() }
-        }
-        bassBoost = null
-    }
-
-    private fun releaseEqualizer() {
-        equalizer?.let {
-            runCatching { it.enabled = false }
-            runCatching { it.release() }
-        }
-        equalizer = null
-    }
-
-    private fun releaseLoudness() {
-        loudnessEnhancer?.let {
-            runCatching { it.enabled = false }
-            runCatching { it.release() }
-        }
-        loudnessEnhancer = null
-    }
-
-    private fun releaseVirtualizer() {
-        virtualizer?.let {
-            runCatching { it.enabled = false }
-            runCatching { it.release() }
-        }
-        virtualizer = null
     }
 }

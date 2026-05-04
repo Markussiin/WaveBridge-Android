@@ -242,7 +242,7 @@ private fun EffectsTab(
     stats: ReceiverStats,
     onSettings: (AudioSettings) -> Unit,
 ) {
-    SectionCard("Effect Presets", "Tone presets use Android's built-in audio effects and stay optional.") {
+    SectionCard("Effect Presets", "Tone presets are applied directly to the received PCM stream.") {
         AudioEffectPreset.entries.filter { it != AudioEffectPreset.Custom }.forEach { preset ->
             EffectPresetRow(
                 preset = preset,
@@ -252,7 +252,7 @@ private fun EffectsTab(
         }
     }
 
-    SectionCard("Processing", "Manual controls apply to the active output session and release when disabled.") {
+    SectionCard("Processing", "Manual controls stay idle when disabled and run before Android playback when enabled.") {
         SettingSwitch("Enable effects", "Turn off for the cleanest signal and lowest processing cost.", settings.effectsEnabled) { enabled ->
             onSettings(
                 if (enabled) {
@@ -262,7 +262,7 @@ private fun EffectsTab(
                 },
             )
         }
-        DetailRow("Active effects", stats.effectsStatus)
+        DetailRow("Effect status", stats.effectsStatus)
         SettingSlider(
             label = "Bass boost",
             value = settings.bassBoostStrength,
@@ -295,7 +295,7 @@ private fun EffectsTab(
             },
         )
         SettingSlider(
-            label = "Virtualizer",
+            label = "Stereo width",
             value = settings.virtualizerStrength,
             range = 0f..1000f,
             step = 25,
@@ -312,7 +312,7 @@ private fun EffectsTab(
         )
     }
 
-    SectionCard("Equalizer", "Five simple tone bands are mapped to the phone's available EQ bands.") {
+    SectionCard("Equalizer", "Five tone bands shape the stream before it reaches the phone output.") {
         SettingSwitch("Enable equalizer", "Use the device equalizer after the stream is decoded.", settings.equalizerEnabled) {
             onSettings(
                 settings.copy(
